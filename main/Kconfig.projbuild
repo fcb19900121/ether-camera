@@ -1,0 +1,241 @@
+menu "Example Configuration"
+    config EXAMPLE_ETH_DEINIT_AFTER_S
+        int "Stop and deinit Ethernet after elapsing number of secs"
+        range -1 300
+        default -1
+        help
+            This option is for demonstration purposes only to demonstrate deinitialization of the Ethernet driver.
+            Set to -1 to not deinitialize.
+
+    config EXAMPLE_USE_STATIC_IP
+        bool "Use static IP address"
+        default n
+        help
+            Enable this option to use a static IP address instead of DHCP.
+
+    if EXAMPLE_USE_STATIC_IP
+        config EXAMPLE_STATIC_IP_ADDR_1
+            int "Static IP Address (1st octet)"
+            default 192
+        config EXAMPLE_STATIC_IP_ADDR_2
+            int "Static IP Address (2nd octet)"
+            default 168
+        config EXAMPLE_STATIC_IP_ADDR_3
+            int "Static IP Address (3rd octet)"
+            default 1
+
+        choice EXAMPLE_CAMERA_ID
+            prompt "Select Camera Device ID"
+            default EXAMPLE_CAMERA_ID_1
+            help
+                Select the camera identity to automatically set the IP address 4th octet.
+                - Camera 1: 192.168.1.101
+                - Camera 2: 192.168.1.102
+                - Camera 3: 192.168.1.103
+                - Camera 4: 192.168.1.104
+
+            config EXAMPLE_CAMERA_ID_1
+                bool "Camera 1 (IP ...101)"
+            
+            config EXAMPLE_CAMERA_ID_2
+                bool "Camera 2 (IP ...102)"
+
+            config EXAMPLE_CAMERA_ID_3
+                bool "Camera 3 (IP ...103)"
+
+            config EXAMPLE_CAMERA_ID_4
+                bool "Camera 4 (IP ...104)"
+            
+            config EXAMPLE_CAMERA_CUSTOM_IP
+                bool "Custom IP Address"
+        endchoice
+
+        # 这是一个仅在 Custom 模式下显示的输入框
+        config EXAMPLE_STATIC_IP_ADDR_4_MANUAL
+            int "Custom IP Address (4th octet)"
+            depends on EXAMPLE_CAMERA_CUSTOM_IP
+            default 100
+            help
+                Enter the 4th octet of the IP address manually.
+
+        # 这是一个隐藏的自动计算值，它是真正被C代码使用的变量
+        # 因为它没有提示符 (prompt string)，用户无法在 menuconfig 中看见或修改它
+        # 所以它会强制使用 default 逻辑计算出的值，从而解决了"锁死"问题
+        config EXAMPLE_STATIC_IP_ADDR_4
+            int
+            default EXAMPLE_STATIC_IP_ADDR_4_MANUAL if EXAMPLE_CAMERA_CUSTOM_IP
+            default 101 if EXAMPLE_CAMERA_ID_1
+            default 102 if EXAMPLE_CAMERA_ID_2
+            default 103 if EXAMPLE_CAMERA_ID_3
+            default 104 if EXAMPLE_CAMERA_ID_4
+            default 100
+
+        config EXAMPLE_STATIC_GW_ADDR_1
+            int "Static Gateway Address (1st octet)"
+            default 192
+        config EXAMPLE_STATIC_GW_ADDR_2
+            int "Static Gateway Address (2nd octet)"
+            default 168
+        config EXAMPLE_STATIC_GW_ADDR_3
+            int "Static Gateway Address (3rd octet)"
+            default 1
+        config EXAMPLE_STATIC_GW_ADDR_4
+            int "Static Gateway Address (4th octet)"
+            default 1
+
+        config EXAMPLE_STATIC_NETMASK_1
+            int "Static Netmask (1st octet)"
+            default 255
+        config EXAMPLE_STATIC_NETMASK_2
+            int "Static Netmask (2nd octet)"
+            default 255
+        config EXAMPLE_STATIC_NETMASK_3
+            int "Static Netmask (3rd octet)"
+            default 255
+        config EXAMPLE_STATIC_NETMASK_4
+            int "Static Netmask (4th octet)"
+            default 0
+    endif
+
+    menu "Camera Configuration"
+        config EXAMPLE_ENABLE_MIPI_CSI_CAM_SENSOR
+            bool "Enable MIPI CSI Camera Sensor"
+            default y
+            depends on SOC_MIPI_CSI_SUPPORTED
+
+        if EXAMPLE_ENABLE_MIPI_CSI_CAM_SENSOR
+            config EXAMPLE_MIPI_CSI_SCCB_I2C_PORT
+                int "MIPI CSI SCCB I2C Port Number"
+                default 0
+                range 0 1
+
+            config EXAMPLE_MIPI_CSI_SCCB_I2C_SCL_PIN
+                int "MIPI CSI SCCB I2C SCL Pin"
+                default 8
+                range -1 56
+
+            config EXAMPLE_MIPI_CSI_SCCB_I2C_SDA_PIN
+                int "MIPI CSI SCCB I2C SDA Pin"
+                default 7
+                range -1 56
+
+            config EXAMPLE_MIPI_CSI_SCCB_I2C_FREQ
+                int "MIPI CSI SCCB I2C Frequency"
+                default 100000
+                range 100000 400000
+                help
+                    Increasing this value can reduce the initialization time of the camera sensor.
+                    Please refer to the relevant instructions of the camera sensor to adjust the value.
+
+            config EXAMPLE_MIPI_CSI_CAM_SENSOR_RESET_PIN
+                int "MIPI CSI Camera Sensor Reset Pin"
+                default -1
+                range -1 56
+
+            config EXAMPLE_MIPI_CSI_CAM_SENSOR_PWDN_PIN
+                int "MIPI CSI Camera Sensor Power Down Pin"
+                default -1
+                range -1 56
+        endif
+
+        config EXAMPLE_CAM_BUF_COUNT
+            int "Camera Buffer Count"
+            default 2
+            range 2 3
+
+        choice
+            prompt "Choose the color format"
+            default LCD_PIXEL_FORMAT_RGB565
+                config LCD_PIXEL_FORMAT_RGB565
+                    bool "RGB565"
+
+                config LCD_PIXEL_FORMAT_RGB888
+                    bool "RGB888"
+        endchoice
+
+        config EXAMPLE_ENABLE_CAM_SENSOR_PIC_VFLIP
+            bool "Enable Camera Sensor Picture Vertical Flip"
+            default y
+            help
+                Select this option, enable camera sensor picture vertical flip.
+
+        config EXAMPLE_ENABLE_CAM_SENSOR_PIC_HFLIP
+            bool "Enable Camera Sensor Picture Horizontal Flip"
+            default y
+            help
+                Select this option, enable camera sensor picture horizontal flip.
+    endmenu
+
+    menu "External Trigger Configuration"
+        config TRIGGER_ENABLE
+            bool "Enable External Trigger for Camera"
+            default y
+            help
+                Enable GPIO-based external trigger for camera capture.
+                Rising edge starts capture and resets timestamp.
+                Falling edge stops capture.
+
+        if TRIGGER_ENABLE
+            config TRIGGER_GPIO_PIN
+                int "Trigger GPIO Pin Number"
+                default 0
+                range 0 56
+                help
+                    GPIO pin number for external trigger input.
+                    Connect external trigger signal to this pin.
+
+            choice TRIGGER_CAMERA_MODE
+                prompt "Camera Operating Mode"
+                default TRIGGER_MODE_ALWAYS_ON
+                help
+                    Select camera operating mode when trigger is used.
+
+                config TRIGGER_MODE_ALWAYS_ON
+                    bool "Always On (Low Latency)"
+                    help
+                        Camera runs continuously.
+                        Trigger only controls frame storage to ring buffer.
+                        With 60fps: First frame latency 0-17ms
+                        With 25fps: First frame latency 0-40ms
+                        Power consumption: High
+
+                config TRIGGER_MODE_STANDBY
+                    bool "Standby Mode (Power Saving)"
+                    help
+                        Camera stays in standby (not capturing).
+                        Trigger starts camera capture.
+                        First frame latency: ~200ms (camera startup time)
+                        Power consumption: Low when idle
+            endchoice
+
+            config TRIGGER_STANDBY_AUTO_STOP
+                bool "Auto stop after capture complete"
+                default y
+                depends on TRIGGER_MODE_STANDBY
+                help
+                    Automatically stop camera when trigger goes inactive.
+                    If disabled, camera keeps running until manually stopped.
+
+            config TRIGGER_ALWAYS_STREAM
+                bool "Always stream video to HTTP (even when not triggered)"
+                default y
+                help
+                    When enabled, video frames are always streamed to HTTP clients
+                    regardless of trigger state. Trigger only controls ring buffer storage.
+                    When disabled, frames are only processed when trigger is active.
+
+            config TRIGGER_FRAME_DECIMATION
+                int "Frame decimation factor (store every Nth frame)"
+                default 1
+                range 1 10
+                depends on TRIGGER_MODE_ALWAYS_ON
+                help
+                    Store every Nth frame to save memory and bandwidth.
+                    1 = store all frames (60fps camera = 60fps storage)
+                    2 = store every 2nd frame (60fps camera = 30fps storage)
+                    3 = store every 3rd frame (60fps camera = 20fps storage)
+                    Use this with 60fps camera mode to reduce storage while
+                    maintaining low trigger latency (~17ms max).
+        endif
+    endmenu
+endmenu

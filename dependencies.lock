@@ -1,0 +1,108 @@
+dependencies:
+  espressif/cmake_utilities:
+    component_hash: 351350613ceafba240b761b4ea991e0f231ac7a9f59a9ee901f751bddc0bb18f
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=4.1'
+    source:
+      registry_url: https://components.espressif.com
+      type: service
+    version: 0.5.3
+  espressif/esp_cam_sensor:
+    component_hash: 7b110b08542aeae833895dacd74425e926dd36eed68ae1a26f2b6109e04ea984
+    dependencies:
+    - name: espressif/cmake_utilities
+      registry_url: https://components.espressif.com
+      require: private
+      version: 0.*
+    - name: espressif/esp_sccb_intf
+      registry_url: https://components.espressif.com
+      require: private
+      version: '>=0.0.2'
+    - name: idf
+      require: private
+      version: '>=5.3'
+    source:
+      registry_url: https://components.espressif.com
+      type: service
+    targets:
+    - esp32p4
+    version: 0.9.0
+  espressif/esp_h264:
+    component_hash: e0b0212f2bdf1fc289a7370e6e7e69cd19883ae52661c746e9023a7cc7f22255
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=4.4'
+    source:
+      registry_url: https://components.espressif.com
+      type: service
+    targets:
+    - esp32s3
+    - esp32p4
+    version: 1.2.0~1
+  espressif/esp_ipa:
+    component_hash: 7547b050a99351a85aaba8ba38211c36fd4769c2ae3e570fa330dc90dfd2704c
+    dependencies:
+    - name: espressif/cmake_utilities
+      registry_url: https://components.espressif.com
+      require: private
+      version: 0.*
+    - name: idf
+      require: private
+      version: '>=5.4'
+    source:
+      registry_url: https://components.espressif.com
+      type: service
+    targets:
+    - esp32p4
+    version: 0.2.0
+  espressif/esp_sccb_intf:
+    component_hash: 44dfa738680ccbc3705ae6940f59be603165f4f7e4d05c3eb5f433705fdc92be
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=5.3'
+    source:
+      registry_url: https://components.espressif.com
+      type: service
+    version: 0.0.7
+  espressif/esp_video:
+    component_hash: 37f7a3b16aa842e612180d5a4698db1c3bc36142a0b78664eb4ffe67c8cd0510
+    dependencies:
+    - name: espressif/cmake_utilities
+      registry_url: https://components.espressif.com
+      require: private
+      version: 0.*
+    - name: espressif/esp_cam_sensor
+      registry_url: https://components.espressif.com
+      require: private
+      version: 0.9.*
+    - name: espressif/esp_h264
+      registry_url: https://components.espressif.com
+      require: private
+      version: '>=1.0.3'
+    - name: espressif/esp_ipa
+      registry_url: https://components.espressif.com
+      require: private
+      version: 0.2.*
+    - name: idf
+      require: private
+      version: '>=5.4'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    targets:
+    - esp32p4
+    version: 0.8.0~3
+  idf:
+    source:
+      type: idf
+    version: 5.5.2
+direct_dependencies:
+- espressif/esp_video
+- idf
+manifest_hash: f40a8fb54f01d7423fa2a01e88390bb00ee019c117d58af5c3059cc58e8dea0b
+target: esp32p4
+version: 2.0.0

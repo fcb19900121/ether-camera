@@ -1,0 +1,9 @@
+build/
+.cache/
+*.bin
+*.elf
+*.map
+sdkconfig.old
+# Ignore precompiled libraries in managed_components but keep source/config
+managed_components/**/*.a
+managed_components/**/*.o
