@@ -9,15 +9,17 @@
 | MCU | ESP32-P4 (RISC-V 双核) |
 | 摄像头 | OV2710 MIPI CSI |
 | 分辨率 | 1280×720 @ 25fps |
-| 网络 | 以太网（静态IP: 192.168.1.231） |
+| 网络 | 以太网（静态IP: 可配置，默认 192.168.1.10x） |
 | 外部触发 | GPIO 17 |
 
 ## 网络配置
 
-- **IP 地址**: `192.168.1.231`
+- **IP 地址**: 通过 `idf.py menuconfig` → `Example Configuration` → `Select Camera ID` 选择，范围 `192.168.1.101` ~ `192.168.1.104`，或自定义第四段
 - **子网掩码**: `255.255.255.0`
 - **网关**: `192.168.1.1`
 - **DNS**: `192.168.1.1`
+
+> 当前 sdkconfig 配置为 `192.168.1.103`（Camera 3），以下示例均使用此地址。
 
 ## HTTP 端点
 
@@ -33,30 +35,30 @@
 
 #### 浏览器访问
 ```
-http://192.168.1.231/          # 打开Web界面
-http://192.168.1.231/stream    # 直接查看MJPEG视频流
-http://192.168.1.231/snapshot  # 获取单张快照
+http://192.168.1.103/          # 打开Web界面
+http://192.168.1.103/stream    # 直接查看MJPEG视频流
+http://192.168.1.103/snapshot  # 获取单张快照
 ```
 
 #### 命令行工具
 ```bash
 # 使用 ffplay 播放 MJPEG 流
-ffplay http://192.168.1.231/stream
+ffplay http://192.168.1.103/stream
 
 # 使用 ffplay 播放 H264 流
-ffplay http://192.168.1.231/stream/h264
+ffplay http://192.168.1.103/stream/h264
 
 # 使用 VLC 播放
-vlc http://192.168.1.231/stream
+vlc http://192.168.1.103/stream
 
 # 使用 curl 下载快照
-curl -o snapshot.jpg http://192.168.1.231/snapshot
+curl -o snapshot.jpg http://192.168.1.103/snapshot
 
 # 使用 wget 下载快照
-wget http://192.168.1.231/snapshot -O snapshot.jpg
+wget http://192.168.1.103/snapshot -O snapshot.jpg
 
 # 查看流信息
-curl http://192.168.1.231/stream/info
+curl http://192.168.1.103/stream/info
 ```
 
 #### Python 示例
@@ -64,12 +66,12 @@ curl http://192.168.1.231/stream/info
 import requests
 
 # 获取快照
-response = requests.get('http://192.168.1.231/snapshot')
+response = requests.get('http://192.168.1.103/snapshot')
 with open('snapshot.jpg', 'wb') as f:
     f.write(response.content)
 
 # 获取流信息
-info = requests.get('http://192.168.1.231/stream/info').json()
+info = requests.get('http://192.168.1.103/stream/info').json()
 print(info)
 ```
 
@@ -85,19 +87,16 @@ print(info)
 #### /stream/info 响应示例
 ```json
 {
-  "stream": {
-    "active": true,
-    "mode": "MJPEG",
-    "resolution": "1280x720",
-    "input_format": "RGB565",
-    "jpeg_quality": 50,
-    "h264_available": true,
-    "buffer_size": 1843200
-  },
+  "status": "running",
+  "mode": "MJPEG",
+  "width": 1280,
+  "height": 720,
+  "format": "RGB888",
+  "jpeg_quality": 60,
+  "h264_available": true,
   "endpoints": {
     "mjpeg": "/stream",
     "h264": "/stream/h264",
-    "snapshot": "/snapshot",
     "info": "/stream/info"
   }
 }
@@ -110,19 +109,19 @@ print(info)
 | 参数 | 值 |
 |------|------|
 | 触发引脚 | GPIO 17 |
-| 触发方式 | 下降沿 |
+| 触发方式 | 双边沿（上升沿启动，下降沿停止） |
 | 内部上拉 | 已启用 |
 
 ### 触发行为
 - 摄像头始终运行（25fps 连续出帧）
 - 触发信号清空帧缓存并开始记录
-- 环形缓冲区可缓存最近 5 帧（约 200ms）
+- 环形缓冲区可缓存最近 10 帧（约 400ms）
 
 ## 视频编码
 
 | 编码器 | 说明 |
 |------|------|
-| JPEG | 硬件编码，质量 50，YUV420 子采样 |
+| JPEG | 硬件编码，质量 60，RGB888 输入 |
 | H264 | 硬件编码（需要 YUV420 输入） |
 
 ## 延迟特性
