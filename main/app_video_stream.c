@@ -87,7 +87,7 @@ static const char *_STREAM_PART = "Content-Type: image/jpeg\r\nContent-Length: %
 
 static httpd_handle_t stream_httpd = NULL;
 static int g_video_fd = -1;
-static bool stream_active = false;
+static volatile bool stream_active = false;
 static SemaphoreHandle_t stream_mutex = NULL;
 
 // Hardware JPEG encoder (for MJPEG mode)
@@ -118,7 +118,7 @@ static size_t jpeg_ts_buffer_size = 0;
 // FPS statistics
 static int64_t last_frame_time = 0;
 static int frame_count = 0;
-static bool camera_stream_started = false;  // Track if camera capture is running
+static volatile bool camera_stream_started = false;  // Track if camera capture is running
 
 // Raw frame counter (for debugging - counts all frames from camera)
 static uint32_t raw_frame_counter = 0;
@@ -226,6 +226,16 @@ static void trigger_event_handler_task(void *arg)
                 // The ISR already sets up new trigger state on next rising edge.
                 // Calling reset here would clear g_trigger_start_time that was
                 // already set by a new rising edge ISR (race condition).
+
+                // FIX Bug 2: Signal stream loop to exit so the httpd socket is released.
+                // Without this, stream_handler blocks on frame_ready_sem indefinitely
+                // after camera stops, holding the socket slot until the client disconnects.
+                // Over multiple trigger cycles this exhausts the httpd socket pool.
+                stream_active = false;
+                if (frame_ready_sem != NULL) {
+                    xSemaphoreGive(frame_ready_sem);  // Wake up the sleeping stream loop
+                }
+                ESP_LOGI(TAG, "Stream loop signalled to exit (socket will be released)");
             }
         }
     }
@@ -878,6 +888,15 @@ static esp_err_t stream_handler(httpd_req_t *req)
         ESP_LOGW(TAG, "Timeout waiting for trigger/frames after %d ms", wait_count);
         client_ready = false;
         waiting_for_trigger = false;
+        // FIX Bug 5: Stop camera if it somehow started but produced no frames,
+        // so camera_stream_started is not left true for the next connection.
+        if (g_video_fd >= 0 && camera_stream_started) {
+            app_video_stream_off(g_video_fd);
+            camera_stream_started = false;
+        }
+        ring_write_index = 0;
+        ring_read_index = 0;
+        ring_frame_count = 0;
         httpd_resp_send_chunk(req, NULL, 0);  // End chunked response
         return ESP_FAIL;
     }
@@ -1023,20 +1042,43 @@ stream_end:
         xSemaphoreTake(frame_ready_sem, 0);
     }
     
-    // Stop camera if running (allows fresh start on next connection)
-    if (g_video_fd >= 0 && camera_stream_started) {
-        app_video_stream_off(g_video_fd);
-        camera_stream_started = false;
-        ESP_LOGI(TAG, "Camera stopped on client disconnect");
+    // FIX: Race condition — a new trigger rising edge may fire between TRIGGER_STOP
+    // (which exits the stream loop) and this cleanup code. In that case,
+    // trigger_event_handler_task has already restarted the camera and set
+    // camera_stream_started=true for the new recording. Stopping the camera here
+    // or clearing the ring buffer would silently kill the new trigger's recording,
+    // leaving the next client waiting 60s with no frames → "cannot connect".
+    //
+    // Solution: check app_trigger_is_active() before touching camera or ring buffer.
+    //   - Trigger inactive: normal disconnect path — stop camera, clear buffer.
+    //   - Trigger active:   new trigger already owns the camera — leave it running.
+    if (!app_trigger_is_active()) {
+        // Normal path: trigger is not active, clean up fully.
+        if (g_video_fd >= 0 && camera_stream_started) {
+            app_video_stream_off(g_video_fd);
+            camera_stream_started = false;
+            ESP_LOGI(TAG, "Camera stopped on client disconnect");
+        }
+
+        // FIX Bug 1: Do NOT call app_trigger_reset() here.
+        // If a new trigger rising edge has already fired, its g_trigger_start_time
+        // has been written by the ISR. Calling app_trigger_reset() would clear it
+        // to 0, causing video_frame_callback to see no valid trigger and drop all
+        // frames silently → ring buffer stays empty → next client cannot connect.
+        // The ISR naturally resets g_trigger_start_time and g_frame_count on each
+        // rising edge, so no explicit reset is needed here.
+
+        // Clear ring buffer (stale frames from completed trigger session)
+        ring_write_index = 0;
+        ring_read_index = 0;
+        ring_frame_count = 0;
+    } else {
+        // New trigger is already active: its rising edge fired during our cleanup.
+        // trigger_event_handler_task owns the camera and ring buffer — do not touch them.
+        // The next stream_handler call will see camera_stream_started=true and
+        // pick up frames directly from the ring buffer.
+        ESP_LOGI(TAG, "New trigger active during cleanup — preserving camera and ring buffer");
     }
-    
-    // Reset trigger state for next connection
-    app_trigger_reset();
-    
-    // Clear ring buffer
-    ring_write_index = 0;
-    ring_read_index = 0;
-    ring_frame_count = 0;
     
     ESP_LOGI(TAG, "Stream client disconnected (sent %d cached + live frames)", cached_frames_sent);
     return res;
@@ -1429,6 +1471,10 @@ esp_err_t app_video_stream_server_start(int video_fd)
     config.stack_size = 16384; // 16KB stack to be safe
     config.core_id = 0; // Keep on Core 0 for stability
     config.task_priority = 10; // Increase to 10 (higher than standard 5, lower than LwIP 18)
+    // FIX Bug 3: Allow server to reclaim oldest idle socket when the pool is full.
+    // Without this, a full socket pool causes ALL new connections to be rejected
+    // until the server is restarted. This is the last-resort safety net.
+    config.lru_purge_enable = true;
 
     ESP_LOGI(TAG, "Starting HTTP server on port %d", config.server_port);
     ret = httpd_start(&stream_httpd, &config);
