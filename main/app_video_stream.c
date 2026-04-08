@@ -33,8 +33,11 @@
 static const char *TAG = "video_stream";
 
 #define PART_BOUNDARY "123456789000000000000987654321"
-#define JPEG_ENC_QUALITY 60  // Higher quality (50-70 streaming, 75-90 high quality)
+#define JPEG_ENC_QUALITY_DEFAULT 60  // Default quality (50-70 streaming, 75-90 high quality)
 #define H264_BUFFER_COUNT 2
+
+/* Runtime-configurable JPEG quality (1-100). Changed via app_video_stream_set_jpeg_quality(). */
+static volatile int g_jpeg_quality = JPEG_ENC_QUALITY_DEFAULT;
 
 // Manual exposure configuration (set to 0 to use auto exposure)
 // Exposure time in microseconds: 5000=5ms (normal indoor), 10000=10ms (bright), 20000=20ms (dim)
@@ -134,10 +137,32 @@ static volatile bool waiting_for_trigger = false;
 static volatile bool camera_preheating = false;
 
 // AE warmup: skip first N frames after trigger to let AE stabilize
-// NOTE: OV2710 uses fixed manual exposure (MANUAL_EXPOSURE_US), so AE warmup is not needed.
-//       Set to 0 to minimize trigger-to-first-frame latency.
-#define AE_WARMUP_FRAMES 0    // OV2710 fixed manual exposure: no AE warmup needed
-static volatile uint32_t frames_to_skip = 0;  // Decremented in callback
+// Number of frames to skip after trigger before recording (runtime configurable).
+// 0 = record from the very first frame (lowest latency).
+// Increase if the first few frames are overexposed or noisy.
+static volatile uint32_t g_skip_frames_on_trigger = 0;  // Set via UDP / runtime API
+static volatile uint32_t frames_to_skip = 0;            // Decremented in callback
+
+// Trigger mode and UDP trigger runtime state/statistics
+static volatile app_trigger_mode_t g_trigger_mode = APP_TRIGGER_MODE_GPIO;
+static volatile bool g_udp_trigger_active = false;
+static volatile int64_t g_udp_trigger_start_time = 0;
+static volatile uint32_t g_udp_frame_counter = 0;
+static volatile uint32_t g_udp_dropped_frames_est = 0;
+static volatile int64_t g_udp_first_frame_latency_us = -1;
+static volatile int64_t g_udp_last_capture_time_us = 0;
+static volatile int64_t g_udp_last_frame_interval_us = 0;
+static volatile int64_t g_udp_interval_sum_us = 0;
+static volatile uint32_t g_udp_interval_samples = 0;
+static volatile bool g_combined_trigger_active = false;
+
+#define EXPECTED_FRAME_INTERVAL_US 40000  // 25fps nominal interval
+
+// Trigger event enum (must be declared before notify_trigger_state_if_changed)
+typedef enum {
+    TRIGGER_EVENT_START,
+    TRIGGER_EVENT_STOP
+} trigger_event_t;
 
 // Event queue for deferred trigger handling (to avoid stack overflow in callback)
 static QueueHandle_t trigger_event_queue = NULL;
@@ -146,10 +171,27 @@ static TaskHandle_t trigger_handler_task = NULL;
 // Semaphore to notify stream sender when a new frame is in the ring buffer
 static SemaphoreHandle_t frame_ready_sem = NULL;
 
-typedef enum {
-    TRIGGER_EVENT_START,
-    TRIGGER_EVENT_STOP
-} trigger_event_t;
+static bool is_current_trigger_active(void)
+{
+    return g_udp_trigger_active || app_trigger_is_active();
+}
+
+static void notify_trigger_state_if_changed(bool new_active)
+{
+    if (new_active == g_combined_trigger_active) {
+        return;
+    }
+    g_combined_trigger_active = new_active;
+
+    if (trigger_event_queue == NULL) {
+        return;
+    }
+
+    trigger_event_t event = new_active ? TRIGGER_EVENT_START : TRIGGER_EVENT_STOP;
+    if (xQueueSend(trigger_event_queue, &event, 0) != pdTRUE) {
+        ESP_LOGW(TAG, "Trigger event queue full!");
+    }
+}
 
 // Startup latency calibration results
 #define CALIBRATION_SAMPLES 3
@@ -181,9 +223,19 @@ static void trigger_event_handler_task(void *arg)
                 ring_frame_count = 0;
                 raw_frame_counter = 0;
                 last_capture_time_us = 0;  // Reset frame interval tracking
-                frames_to_skip = AE_WARMUP_FRAMES;  // Skip first N frames for AE warmup
+                frames_to_skip = g_skip_frames_on_trigger;  // Skip first N frames (configurable)
+
+                if (g_trigger_mode == APP_TRIGGER_MODE_UDP) {
+                    g_udp_frame_counter = 0;
+                    g_udp_dropped_frames_est = 0;
+                    g_udp_first_frame_latency_us = -1;
+                    g_udp_last_capture_time_us = 0;
+                    g_udp_last_frame_interval_us = 0;
+                    g_udp_interval_sum_us = 0;
+                    g_udp_interval_samples = 0;
+                }
                 
-                ESP_LOGI(TAG, "Will skip first %d frames for AE warmup", AE_WARMUP_FRAMES);
+                ESP_LOGI(TAG, "Will skip first %lu frames after trigger", (unsigned long)g_skip_frames_on_trigger);
                 
                 // Notify waiting client that trigger has arrived
                 waiting_for_trigger = false;
@@ -248,16 +300,8 @@ static void trigger_event_handler_task(void *arg)
  */
 static void trigger_state_callback(bool active)
 {
-    if (trigger_event_queue == NULL) {
-        return;
-    }
-    
-    trigger_event_t event = active ? TRIGGER_EVENT_START : TRIGGER_EVENT_STOP;
-    
-    // Post event to queue (non-blocking)
-    if (xQueueSend(trigger_event_queue, &event, 0) != pdTRUE) {
-        ESP_LOGW(TAG, "Trigger event queue full!");
-    }
+    bool combined = g_udp_trigger_active || active;
+    notify_trigger_state_if_changed(combined);
 }
 
 /**
@@ -682,9 +726,16 @@ static void video_frame_callback(uint8_t *camera_buf, uint8_t camera_buf_index,
         return;
     }
 
-    // Get trigger state and frame info
-    trigger_frame_info_t frame_info;
-    bool is_triggered = (app_trigger_get_frame_info(&frame_info) == ESP_OK);
+    // Get trigger state and frame info (GPIO OR UDP)
+    trigger_frame_info_t frame_info = {0};
+    bool gpio_active = (app_trigger_get_frame_info(&frame_info) == ESP_OK);
+    bool udp_active = (g_udp_trigger_active && g_udp_trigger_start_time > 0);
+    bool is_triggered = gpio_active || udp_active;
+
+    if (!gpio_active && udp_active) {
+        frame_info.is_triggered = true;
+        frame_info.timestamp_us = frame_complete_time - g_udp_trigger_start_time;
+    }
     
     ESP_LOGD(TAG, "  triggered=%d, frame_num=%lu, skip_remain=%lu",
              is_triggered, (unsigned long)frame_info.frame_number, (unsigned long)frames_to_skip);
@@ -706,7 +757,7 @@ static void video_frame_callback(uint8_t *camera_buf, uint8_t camera_buf_index,
     }
     
     // Calculate accurate timestamps relative to trigger
-    int64_t trigger_start = app_trigger_get_start_time();
+    int64_t trigger_start = gpio_active ? app_trigger_get_start_time() : g_udp_trigger_start_time;
     frame_info.callback_time_us = frame_complete_time - trigger_start;
 
     // Use V4L2 frame start timestamp for accurate capture time.
@@ -751,7 +802,31 @@ static void video_frame_callback(uint8_t *camera_buf, uint8_t camera_buf_index,
         if (ret == ESP_OK && encoded_size > 0) 
         {
             // Allocate frame number
-            frame_num = app_trigger_alloc_frame_number();
+            if (gpio_active) {
+                frame_num = app_trigger_alloc_frame_number();
+            } else {
+                frame_num = ++g_udp_frame_counter;
+
+                if (g_udp_first_frame_latency_us < 0) {
+                    g_udp_first_frame_latency_us = frame_info.capture_time_us;
+                }
+
+                if (g_udp_last_capture_time_us > 0 && frame_info.capture_time_us > g_udp_last_capture_time_us) {
+                    int64_t interval = frame_info.capture_time_us - g_udp_last_capture_time_us;
+                    g_udp_last_frame_interval_us = interval;
+                    g_udp_interval_sum_us += interval;
+                    g_udp_interval_samples++;
+
+                    if (interval > (EXPECTED_FRAME_INTERVAL_US * 3) / 2) {
+                        uint32_t dropped = (uint32_t)(interval / EXPECTED_FRAME_INTERVAL_US);
+                        if (dropped > 1) {
+                            g_udp_dropped_frames_est += (dropped - 1);
+                        }
+                    }
+                }
+                g_udp_last_capture_time_us = frame_info.capture_time_us;
+            }
+
             capture_time = g_current_frame_info.capture_time_us;
             g_current_frame_info.frame_number = frame_num;
 
@@ -1049,10 +1124,10 @@ stream_end:
     // or clearing the ring buffer would silently kill the new trigger's recording,
     // leaving the next client waiting 60s with no frames → "cannot connect".
     //
-    // Solution: check app_trigger_is_active() before touching camera or ring buffer.
+    // Solution: check the currently selected trigger source before touching camera or ring buffer.
     //   - Trigger inactive: normal disconnect path — stop camera, clear buffer.
     //   - Trigger active:   new trigger already owns the camera — leave it running.
-    if (!app_trigger_is_active()) {
+    if (!is_current_trigger_active()) {
         // Normal path: trigger is not active, clean up fully.
         if (g_video_fd >= 0 && camera_stream_started) {
             app_video_stream_off(g_video_fd);
@@ -1122,7 +1197,7 @@ static esp_err_t stream_info_handler(httpd_req_t *req)
         (unsigned long)app_video_get_width(),
         (unsigned long)app_video_get_height(),
         "RGB888",
-        JPEG_ENC_QUALITY,
+        g_jpeg_quality,
         h264_fd >= 0 ? "true" : "false"
     );
     
@@ -1255,7 +1330,7 @@ esp_err_t app_video_stream_server_start(int video_fd)
     // RGB888: unambiguous 3-byte format, no layout mismatch, correct colors
     jpeg_enc_config.src_type = JPEG_ENCODE_IN_FORMAT_RGB888;
     jpeg_enc_config.sub_sample = JPEG_DOWN_SAMPLING_YUV444;  // RGB888 requires YUV444
-    jpeg_enc_config.image_quality = JPEG_ENC_QUALITY;
+    jpeg_enc_config.image_quality = g_jpeg_quality;
     jpeg_enc_config.width = app_video_get_width();
     jpeg_enc_config.height = app_video_get_height();
 
@@ -1607,4 +1682,92 @@ esp_err_t app_video_stream_server_stop(void)
 httpd_handle_t app_video_stream_get_server(void)
 {
     return stream_httpd;
+}
+
+void app_video_stream_set_jpeg_quality(int quality)
+{
+    if (quality < 1)   quality = 1;
+    if (quality > 100) quality = 100;
+    g_jpeg_quality = quality;
+    /* Update the encode config so the next frame uses the new quality */
+    jpeg_enc_config.image_quality = quality;
+    ESP_LOGI(TAG, "JPEG quality updated to %d", quality);
+}
+
+int app_video_stream_get_jpeg_quality(void)
+{
+    return g_jpeg_quality;
+}
+
+void app_video_stream_set_skip_frames(uint32_t n)
+{
+    g_skip_frames_on_trigger = n;
+    ESP_LOGI(TAG, "Skip-frames-on-trigger set to %lu", (unsigned long)n);
+}
+
+uint32_t app_video_stream_get_skip_frames(void)
+{
+    return g_skip_frames_on_trigger;
+}
+
+void app_video_stream_set_trigger_mode(app_trigger_mode_t mode)
+{
+    if (mode != APP_TRIGGER_MODE_GPIO && mode != APP_TRIGGER_MODE_UDP) {
+        return;
+    }
+
+    // Keep this as UI/reporting preference only.
+    // Runtime trigger logic is GPIO OR UDP and does not disable the other source.
+    g_trigger_mode = mode;
+    ESP_LOGI(TAG, "Trigger mode set to %s", mode == APP_TRIGGER_MODE_UDP ? "UDP" : "GPIO");
+}
+
+app_trigger_mode_t app_video_stream_get_trigger_mode(void)
+{
+    return g_trigger_mode;
+}
+
+esp_err_t app_video_stream_udp_trigger_start(void)
+{
+    if (trigger_event_queue == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    g_udp_trigger_start_time = esp_timer_get_time();
+    g_udp_trigger_active = true;
+
+    notify_trigger_state_if_changed(is_current_trigger_active());
+    ESP_LOGI(TAG, "UDP trigger start: udp_active=1 gpio_active=%d combined=%d",
+             app_trigger_is_active(), is_current_trigger_active());
+    return ESP_OK;
+}
+
+esp_err_t app_video_stream_udp_trigger_stop(void)
+{
+    if (trigger_event_queue == NULL) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    g_udp_trigger_active = false;
+    g_udp_trigger_start_time = 0;
+    notify_trigger_state_if_changed(is_current_trigger_active());
+    ESP_LOGI(TAG, "UDP trigger stop: udp_active=0 gpio_active=%d combined=%d",
+             app_trigger_is_active(), is_current_trigger_active());
+    return ESP_OK;
+}
+
+void app_video_stream_get_trigger_stats(app_trigger_stats_t *stats)
+{
+    if (stats == NULL) {
+        return;
+    }
+
+    stats->active = is_current_trigger_active();
+    stats->frame_count = g_udp_frame_counter;
+    stats->dropped_frames_est = g_udp_dropped_frames_est;
+    stats->first_frame_latency_us = g_udp_first_frame_latency_us;
+    stats->last_frame_interval_us = g_udp_last_frame_interval_us;
+    stats->avg_frame_interval_us = (g_udp_interval_samples > 0)
+                                   ? (g_udp_interval_sum_us / g_udp_interval_samples)
+                                   : 0;
 }

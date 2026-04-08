@@ -29,6 +29,7 @@
 #endif
 
 #include "app_console.h"
+#include "app_udp_config.h"
 
 static const char *TAG = "eth_cam_example";
 
@@ -78,6 +79,9 @@ static void got_ip_event_handler(void *arg, esp_event_base_t event_base,
     ESP_LOGI(TAG, "ETHMASK:" IPSTR, IP2STR(&ip_info->netmask));
     ESP_LOGI(TAG, "ETHGW:" IPSTR, IP2STR(&ip_info->gw));
     ESP_LOGI(TAG, "~~~~~~~~~~~");
+
+    /* Start UDP config service so the host can discover and configure the device */
+    app_udp_config_start(event->esp_netif);
 }
 
 void app_main(void)

@@ -15,6 +15,20 @@
 extern "C" {
 #endif
 
+typedef enum {
+    APP_TRIGGER_MODE_GPIO = 0,
+    APP_TRIGGER_MODE_UDP = 1,
+} app_trigger_mode_t;
+
+typedef struct {
+    bool active;
+    uint32_t frame_count;
+    uint32_t dropped_frames_est;
+    int64_t first_frame_latency_us;
+    int64_t avg_frame_interval_us;
+    int64_t last_frame_interval_us;
+} app_trigger_stats_t;
+
 /**
  * @brief Initialize and start the video stream HTTP server
  * 
@@ -87,6 +101,73 @@ bool jpeg_extract_timestamp(const uint8_t *jpeg_data, size_t jpeg_size,
  */
 size_t jpeg_get_raw_data(const uint8_t *jpeg_with_ts, size_t size_with_ts,
                          const uint8_t **raw_jpeg_start);
+
+/**
+ * @brief Set JPEG encoding quality at runtime.
+ *
+ * Takes effect on the next encoded frame.
+ *
+ * @param quality  Quality value 1-100 (higher = better quality, larger file).
+ *                 Values outside this range are clamped.
+ */
+void app_video_stream_set_jpeg_quality(int quality);
+
+/**
+ * @brief Get the current JPEG encoding quality.
+ *
+ * @return Current quality value (1-100).
+ */
+int app_video_stream_get_jpeg_quality(void);
+
+/**
+ * @brief Set the number of frames to skip after each trigger before recording.
+ *
+ * 0 = record from the very first frame (default, lowest latency).
+ * Increase if the first N frames are overexposed or noisy due to AE settling.
+ * Takes effect on the next trigger event.
+ *
+ * @param n  Number of frames to skip (0–255 practical range).
+ */
+void app_video_stream_set_skip_frames(uint32_t n);
+
+/**
+ * @brief Get the current skip-frames-on-trigger setting.
+ *
+ * @return Number of frames skipped after each trigger.
+ */
+uint32_t app_video_stream_get_skip_frames(void);
+
+/**
+ * @brief Set trigger source mode.
+ *
+ * GPIO mode uses external hardware trigger.
+ * UDP mode allows software trigger start/stop commands.
+ */
+void app_video_stream_set_trigger_mode(app_trigger_mode_t mode);
+
+/**
+ * @brief Get current trigger source mode.
+ */
+app_trigger_mode_t app_video_stream_get_trigger_mode(void);
+
+/**
+ * @brief Start UDP software trigger capture.
+ *
+ * Valid only when trigger mode is APP_TRIGGER_MODE_UDP.
+ */
+esp_err_t app_video_stream_udp_trigger_start(void);
+
+/**
+ * @brief Stop UDP software trigger capture.
+ *
+ * Valid only when trigger mode is APP_TRIGGER_MODE_UDP.
+ */
+esp_err_t app_video_stream_udp_trigger_stop(void);
+
+/**
+ * @brief Read current trigger statistics.
+ */
+void app_video_stream_get_trigger_stats(app_trigger_stats_t *stats);
 
 #ifdef __cplusplus
 }

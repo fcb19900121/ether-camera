@@ -353,3 +353,15 @@ esp_err_t app_console_start(esp_netif_t *netif)
     }
     return ESP_OK;
 }
+
+/* Public wrappers so other modules (e.g. app_udp_config) can persist IP */
+
+esp_err_t app_console_save_ip(const esp_netif_ip_info_t *ip_info)
+{
+    return save_static_ip(ip_info);
+}
+
+esp_err_t app_console_save_dhcp(void)
+{
+    return save_dhcp_mode();
+}

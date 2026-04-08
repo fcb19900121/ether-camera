@@ -30,6 +30,24 @@ esp_err_t app_console_load_ip(esp_netif_ip_info_t *ip_info, bool *is_static);
  */
 esp_err_t app_console_start(esp_netif_t *netif);
 
+/**
+ * @brief Persist a static IP configuration to NVS.
+ *
+ * Does NOT apply the IP to the running netif — call esp_netif_set_ip_info()
+ * separately if you also need to apply it at runtime.
+ *
+ * @param ip_info  IP / netmask / gateway to save.
+ * @return ESP_OK on success.
+ */
+esp_err_t app_console_save_ip(const esp_netif_ip_info_t *ip_info);
+
+/**
+ * @brief Persist DHCP mode to NVS (clears any stored static IP).
+ *
+ * @return ESP_OK on success.
+ */
+esp_err_t app_console_save_dhcp(void);
+
 #ifdef __cplusplus
 }
 #endif
