@@ -9,6 +9,6 @@
     "--query-driver=**",
     "--compile-commands-dir=d:\\SII_Projects\\ESP32-P4-ETH-Demos\\ESP-IDF\\04_ethernetbasic\\build"
   ],
-  "idf.portWin": "COM14",
+  "idf.portWin": "COM29",
   "idf.currentSetup": "C:\\Users\\moss\\esp\\v5.5.2\\esp-idf"
 }
