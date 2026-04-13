@@ -946,12 +946,21 @@ static esp_err_t stream_handler(httpd_req_t *req)
     ESP_LOGI(TAG, "Waiting for external trigger signal on GPIO %d...", TRIGGER_GPIO_PIN);
     
     // Wait for NEW trigger and frames with timeout (60 seconds)
-    // Note: We wait for frames in ring buffer, regardless of camera_stream_started state
+    // Use frame_ready_sem for near-zero latency wakeup instead of polling
     int wait_count = 0;
     const int max_wait_ms = 60000;
     while (ring_buffer_count() == 0 && wait_count < max_wait_ms) {
-        vTaskDelay(pdMS_TO_TICKS(50));
-        wait_count += 50;
+        if (frame_ready_sem != NULL) {
+            // Block on semaphore — wakes within ~1ms of first frame arriving
+            if (xSemaphoreTake(frame_ready_sem, pdMS_TO_TICKS(1000)) == pdTRUE) {
+                // Semaphore taken — check if frame is actually ready
+                if (ring_buffer_count() > 0) break;
+            }
+            wait_count += 1000;
+        } else {
+            vTaskDelay(pdMS_TO_TICKS(5));
+            wait_count += 5;
+        }
         
         // Send a keep-alive comment every 5 seconds to prevent timeout
         if (wait_count % 5000 == 0 && wait_count > 0) {
